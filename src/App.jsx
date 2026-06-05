@@ -96,19 +96,56 @@ function save(key, val) {
 //  タブ1: トレーダー評価
 // ══════════════════════════════════════════════════════
 function EvalTab() {
-  const [v, setV]     = useState({ hold: "", trades: "", winrate: "", unrealized: "" });
-  const [name, setName] = useState("");
+  const [v, setV]         = useState({ hold: "", trades: "", winrate: "", unrealized: "" });
+  const [name, setName]   = useState("");
+  const [wallet, setWallet] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [fetchStatus, setFetchStatus] = useState(null);
   const [saved, setSaved] = useState(() => load("gmgn_evals", []));
 
   const score   = calcScore(v);
   const sc      = score >= 70 ? G : score >= 45 ? Y : R;
   const verdict = score >= 70 ? "✅ 採用候補" : score >= 45 ? "△ 要観察" : "❌ 不採用";
 
+  async function fetchWallet() {
+    const addr = wallet.trim();
+    if (!addr) return;
+    setLoading(true);
+    setFetchStatus(null);
+    try {
+      const res = await fetch(
+        `https://gmgn.ai/defi/quotation/v1/smartmoney/sol/walletNew/${addr}?period=30d`,
+        { headers: { Accept: "application/json" } }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const d = json?.data || json;
+
+      const holdDays = d.avg_hold_duration != null
+        ? (d.avg_hold_duration / 86400).toFixed(1) : "";
+      const dailyTrades = (d.buy_30d != null || d.sell_30d != null)
+        ? (((d.buy_30d || 0) + (d.sell_30d || 0)) / 30).toFixed(1) : "";
+      const winrate = d.winrate != null
+        ? (d.winrate <= 1 ? (d.winrate * 100).toFixed(1) : d.winrate.toFixed(1)) : "";
+      const unrealized = d.unrealized_profit != null
+        ? parseFloat(d.unrealized_profit).toFixed(0) : "";
+
+      setV({ hold: holdDays, trades: dailyTrades, winrate, unrealized });
+      if (!name) setName(addr.slice(0, 6) + "…" + addr.slice(-4));
+      setFetchStatus({ ok: true, msg: "✅ データ取得成功" });
+    } catch (e) {
+      setFetchStatus({ ok: false, msg: `❌ 取得失敗: ${e.message}` });
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function saveEntry() {
     if (!name.trim()) return;
     const next = [{ name, score, verdict, date: new Date().toLocaleDateString("ja-JP"), id: Date.now() }, ...saved];
     setSaved(next); save("gmgn_evals", next);
-    setName(""); setV({ hold: "", trades: "", winrate: "", unrealized: "" });
+    setName(""); setWallet(""); setV({ hold: "", trades: "", winrate: "", unrealized: "" });
+    setFetchStatus(null);
   }
   function remove(id) {
     const next = saved.filter(x => x.id !== id);
@@ -117,6 +154,38 @@ function EvalTab() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* ウォレット自動取得 */}
+      <div style={cardStyle({ background: "rgba(0,229,160,0.04)", border: "1px solid rgba(0,229,160,0.15)" })}>
+        <div style={{ fontWeight: 800, fontSize: 13, color: G, marginBottom: 10 }}>⚡ ウォレット自動評価</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            placeholder="Solanaウォレットアドレスをペースト"
+            value={wallet}
+            onChange={e => { setWallet(e.target.value); setFetchStatus(null); }}
+            onKeyDown={e => e.key === "Enter" && fetchWallet()}
+            style={{ ...inp, flex: 1, fontSize: 11 }}
+          />
+          <button
+            onClick={fetchWallet}
+            disabled={loading || !wallet.trim()}
+            style={{
+              padding: "9px 14px", borderRadius: 8, border: `1px solid ${G}44`,
+              background: loading ? "rgba(255,255,255,0.04)" : G + "22",
+              color: loading ? "#8a9bb5" : G,
+              fontSize: 12, fontWeight: 700, cursor: loading ? "default" : "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {loading ? "取得中…" : "自動取得"}
+          </button>
+        </div>
+        {fetchStatus && (
+          <div style={{ marginTop: 8, fontSize: 11, color: fetchStatus.ok ? G : R }}>
+            {fetchStatus.msg}
+          </div>
+        )}
+      </div>
+
       {/* 入力フォーム */}
       <div style={cardStyle()}>
         <div style={{ fontWeight: 800, fontSize: 13, color: G, marginBottom: 12 }}>🔍 トレーダー評価</div>

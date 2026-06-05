@@ -30,7 +30,15 @@ export async function onRequest({ params }) {
   });
 
   const body = await res.text();
-  return new Response(body, {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+    // Attach top-level keys for debugging field names
+    const d = parsed?.data || parsed;
+    parsed._keys = Object.keys(d);
+  } catch (_) {}
+
+  return new Response(JSON.stringify(parsed ?? body), {
     status: res.status,
     headers: {
       "Content-Type": "application/json",

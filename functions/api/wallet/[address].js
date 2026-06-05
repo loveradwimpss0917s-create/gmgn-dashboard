@@ -1,36 +1,37 @@
-export async function onRequest({ params, request }) {
+const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+
+export async function onRequest({ params }) {
   const addr = params.address;
 
-  // Try multiple GMGN endpoints in order
-  const endpoints = [
-    `https://gmgn.ai/defi/quotation/v1/smartmoney/sol/walletNew/${addr}?period=30d`,
-    `https://gmgn.ai/api/v1/wallet_stat/sol/${addr}?period=30d`,
-  ];
-
-  const headers = {
-    Accept: "application/json, text/plain, */*",
-    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-    Referer: "https://gmgn.ai/sol/address/" + addr,
-    Origin: "https://gmgn.ai",
-    "Cache-Control": "no-cache",
-  };
-
-  for (const url of endpoints) {
-    const res = await fetch(url, { headers });
-    if (res.ok) {
-      const body = await res.text();
-      return new Response(body, {
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-      });
+  // Step 1: get session cookies from GMGN
+  let cookie = "";
+  try {
+    const home = await fetch(`https://gmgn.ai/sol/address/${addr}`, {
+      headers: { "User-Agent": UA, Accept: "text/html" },
+      redirect: "follow",
+    });
+    const setCookie = home.headers.get("set-cookie");
+    if (setCookie) {
+      cookie = setCookie.split(/,(?=[^ ])/).map(c => c.split(";")[0].trim()).join("; ");
     }
-  }
+  } catch (_) {}
 
-  return new Response(JSON.stringify({ error: "GMGN API unavailable", code: 403 }), {
-    status: 403,
+  // Step 2: fetch wallet stats
+  const apiUrl = `https://gmgn.ai/defi/quotation/v1/smartmoney/sol/walletNew/${addr}?period=30d`;
+  const res = await fetch(apiUrl, {
+    headers: {
+      Accept: "application/json, text/plain, */*",
+      "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+      "User-Agent": UA,
+      Referer: `https://gmgn.ai/sol/address/${addr}`,
+      Origin: "https://gmgn.ai",
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+  });
+
+  const body = await res.text();
+  return new Response(body, {
+    status: res.status,
     headers: {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",

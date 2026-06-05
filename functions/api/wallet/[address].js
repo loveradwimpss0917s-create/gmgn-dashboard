@@ -1,60 +1,71 @@
-const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
-
-export async function onRequest({ params }) {
+// Requires BIRDEYE_API_KEY environment variable in Cloudflare Pages settings
+export async function onRequest({ params, env }) {
   const addr = params.address;
+  const key = env.BIRDEYE_API_KEY;
 
-  // Step 1: get session cookies
-  let cookie = "";
-  try {
-    const home = await fetch(`https://gmgn.ai/sol/address/${addr}`, {
-      headers: { "User-Agent": UA, Accept: "text/html" },
-      redirect: "follow",
-    });
-    const setCookie = home.headers.get("set-cookie");
-    if (setCookie) {
-      cookie = setCookie.split(/,(?=[^ ])/).map(c => c.split(";")[0].trim()).join("; ");
-    }
-  } catch (_) {}
-
-  const headers = {
-    Accept: "application/json, text/plain, */*",
-    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-    "User-Agent": UA,
-    Referer: `https://gmgn.ai/sol/address/${addr}`,
-    Origin: "https://gmgn.ai",
-    ...(cookie ? { Cookie: cookie } : {}),
-  };
-
-  // Try endpoints in order until one succeeds with valid data
-  const endpoints = [
-    `https://gmgn.ai/api/v1/wallet_activity/sol/${addr}?period=30d&type=buy,sell`,
-    `https://gmgn.ai/defi/quotation/v1/wallet_stat/sol/${addr}?period=30d`,
-    `https://gmgn.ai/defi/quotation/v1/pnl/sol/${addr}?period=30d`,
-    `https://gmgn.ai/defi/quotation/v1/smartmoney/sol/walletNew/${addr}?period=30d`,
-  ];
-
-  let lastBody = null;
-  for (const url of endpoints) {
-    try {
-      const res = await fetch(url, { headers });
-      const text = await res.text();
-      const json = JSON.parse(text);
-      // Accept if code is 0 or missing (success) and data is non-empty
-      const d = json?.data;
-      if (json.code === 0 || (d && Object.keys(d).length > 0)) {
-        json._keys = d ? Object.keys(d) : [];
-        json._endpoint = url;
-        return new Response(JSON.stringify(json), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        });
-      }
-      lastBody = json;
-    } catch (_) {}
+  if (!key) {
+    return json({ error: "BIRDEYE_API_KEY not set" }, 500);
   }
 
-  // Return last response with debug info
-  return new Response(JSON.stringify({ ...lastBody, _debug: "all endpoints failed" }), {
-    status: 200,
+  const headers = {
+    Accept: "application/json",
+    "X-API-KEY": key,
+    "x-chain": "solana",
+  };
+
+  // Fetch portfolio (unrealized PnL) and trade stats in parallel
+  const [portfolioRes, txRes] = await Promise.all([
+    fetch(`https://public-api.birdeye.so/v1/wallet/token_list?wallet=${addr}`, { headers }),
+    fetch(`https://public-api.birdeye.so/v1/wallet/tx_list?wallet=${addr}&limit=100&offset=0`, { headers }),
+  ]);
+
+  const portfolio = await portfolioRes.json().catch(() => ({}));
+  const txData    = await txRes.json().catch(() => ({}));
+
+  // Calculate unrealized PnL from portfolio holdings
+  const items = portfolio?.data?.items ?? [];
+  const unrealizedUsd = items.reduce((sum, t) => {
+    const val = (t.uiAmount ?? 0) * (t.priceUsd ?? 0);
+    const cost = t.costBasis ?? 0;
+    return sum + (val - cost);
+  }, 0);
+
+  // Calculate trade stats from last 100 transactions (30d window)
+  const now = Date.now() / 1000;
+  const cutoff = now - 30 * 86400;
+  const txs = (txData?.data?.items ?? []).filter(t => t.blockUnixTime >= cutoff && t.type === "SWAP");
+
+  const buys  = txs.filter(t => t.side === "buy"  || t.from?.symbol === "SOL");
+  const sells = txs.filter(t => t.side === "sell" || t.to?.symbol === "SOL");
+
+  // Win rate: sells where value received > value paid
+  const closedTrades = sells.filter(t => t.pnl != null);
+  const wins = closedTrades.filter(t => t.pnl > 0).length;
+  const winrate = closedTrades.length > 0 ? (wins / closedTrades.length * 100).toFixed(1) : null;
+
+  // Daily trade count
+  const dailyTrades = txs.length > 0 ? (txs.length / 30).toFixed(1) : null;
+
+  // Avg hold time — approximate from paired buy/sell timestamps
+  // (simplified: not matched by token, just overall spread / trade count)
+  const holdDays = null; // requires per-token tracking, skipped for now
+
+  return json({
+    data: {
+      unrealized_profit: items.length > 0 ? unrealizedUsd.toFixed(0) : null,
+      winrate: winrate ? parseFloat(winrate) : null,
+      buy_30d: buys.length,
+      sell_30d: sells.length,
+      avg_hold_duration: holdDays,
+    },
+    _keys: ["unrealized_profit", "winrate", "buy_30d", "sell_30d", "avg_hold_duration"],
+    _source: "birdeye",
+  });
+}
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
     headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
   });
 }

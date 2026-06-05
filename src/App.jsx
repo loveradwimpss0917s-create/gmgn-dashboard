@@ -118,18 +118,38 @@ function EvalTab() {
       const json = await res.json();
       const d = json?.data || json;
 
-      const holdDays = d.avg_hold_duration != null
-        ? (d.avg_hold_duration / 86400).toFixed(1) : "";
-      const dailyTrades = (d.buy_30d != null || d.sell_30d != null)
-        ? (((d.buy_30d || 0) + (d.sell_30d || 0)) / 30).toFixed(1) : "";
-      const winrate = d.winrate != null
-        ? (d.winrate <= 1 ? (d.winrate * 100).toFixed(1) : d.winrate.toFixed(1)) : "";
-      const unrealized = d.unrealized_profit != null
-        ? parseFloat(d.unrealized_profit).toFixed(0) : "";
+      // avg hold time: try multiple field names, value may be in seconds or hours
+      const rawHold = d.avg_hold_duration ?? d.avg_holding_time ?? d.avg_hold_time
+        ?? d.holding_period ?? d.avg_holding_period ?? null;
+      let holdDays = "";
+      if (rawHold != null && rawHold > 0) {
+        // if value > 365 treat as seconds, else as hours, else as days
+        holdDays = rawHold > 365
+          ? (rawHold / 86400).toFixed(1)
+          : rawHold > 24
+            ? (rawHold / 24).toFixed(1)
+            : rawHold.toFixed(1);
+      }
 
+      // daily trade count
+      const buy  = d.buy_30d ?? d.buy ?? 0;
+      const sell = d.sell_30d ?? d.sell ?? 0;
+      const dailyTrades = (buy || sell)
+        ? ((Number(buy) + Number(sell)) / 30).toFixed(1) : "";
+
+      // win rate
+      const rawWr = d.winrate ?? d.win_rate ?? d.winRate ?? null;
+      const winrate = rawWr != null
+        ? (rawWr <= 1 ? (rawWr * 100).toFixed(1) : Number(rawWr).toFixed(1)) : "";
+
+      // unrealized PnL
+      const rawUnreal = d.unrealized_profit ?? d.unrealizedProfit ?? d.unrealized_pnl ?? null;
+      const unrealized = rawUnreal != null ? parseFloat(rawUnreal).toFixed(0) : "";
+
+      const filled = [holdDays, dailyTrades, winrate, unrealized].filter(Boolean).length;
       setV({ hold: holdDays, trades: dailyTrades, winrate, unrealized });
       if (!name) setName(addr.slice(0, 6) + "…" + addr.slice(-4));
-      setFetchStatus({ ok: true, msg: "✅ データ取得成功" });
+      setFetchStatus({ ok: true, msg: `✅ データ取得成功（${filled}/4項目）` });
     } catch (e) {
       setFetchStatus({ ok: false, msg: `❌ 取得失敗: ${e.message}` });
     } finally {

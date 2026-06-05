@@ -113,10 +113,7 @@ function EvalTab() {
     setLoading(true);
     setFetchStatus(null);
     try {
-      const res = await fetch(
-        `https://gmgn.ai/defi/quotation/v1/smartmoney/sol/walletNew/${addr}?period=30d`,
-        { headers: { Accept: "application/json" } }
-      );
+      const res = await fetch(`/api/wallet/${addr}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       const d = json?.data || json;

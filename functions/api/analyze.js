@@ -32,7 +32,7 @@ export async function onRequestPost({ request }) {
       continue;
     }
     try {
-      const data = await getWalletStats(addr);
+      const { data } = await getWalletStats(addr);
       results.push({ address: addr, ...data });
     } catch (e) {
       errors.push({ address: addr, error: String(e.message ?? e) });

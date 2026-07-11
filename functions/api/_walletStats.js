@@ -69,24 +69,34 @@ function median(arr) {
 
 /**
  * Solana RPC + Jupiter からウォレット30日統計を計算する。
- * @returns §4.2 のレスポンス data 形
+ * 各フェーズは独立して失敗しうる（無料公開RPCは getTokenAccountsByOwner のような
+ * 高コストなメソッドを個別に拒否・制限することがあるため）。1フェーズの失敗で
+ * 他のフェーズの結果まで失うことがないよう、フェーズごとに try/catch する。
+ * @returns {{data: object, warnings: string[]}} §4.2 のレスポンス data 形 + 診断情報
  */
 export async function getWalletStats(addr) {
-  // 1. トークン保有
-  const tokenAccounts = await rpc("getTokenAccountsByOwner", [
-    addr,
-    { programId: TOKEN_PROGRAM },
-    { encoding: "jsonParsed" },
-  ]);
-  const holdings = (tokenAccounts?.value ?? [])
-    .map((a) => {
-      const info = a.account.data.parsed.info;
-      return {
-        mint: info.mint,
-        amount: parseFloat(info.tokenAmount.uiAmountString ?? 0),
-      };
-    })
-    .filter((h) => h.amount > 0);
+  const warnings = [];
+
+  // 1. トークン保有（失敗しても未実現損益が null になるだけで続行）
+  let holdings = [];
+  try {
+    const tokenAccounts = await rpc("getTokenAccountsByOwner", [
+      addr,
+      { programId: TOKEN_PROGRAM },
+      { encoding: "jsonParsed" },
+    ]);
+    holdings = (tokenAccounts?.value ?? [])
+      .map((a) => {
+        const info = a.account.data.parsed.info;
+        return {
+          mint: info.mint,
+          amount: parseFloat(info.tokenAmount.uiAmountString ?? 0),
+        };
+      })
+      .filter((h) => h.amount > 0);
+  } catch (e) {
+    warnings.push(`getTokenAccountsByOwner failed: ${e.message}`);
+  }
 
   // 2. Jupiter 価格 → 含み評価額
   let unrealizedUsd = 0;
@@ -102,10 +112,15 @@ export async function getWalletStats(addr) {
     } catch {}
   }
 
-  // 3. 直近30日の署名
-  const sigs = await rpc("getSignaturesForAddress", [addr, { limit: 200 }]);
-  const cutoff = Date.now() / 1000 - 30 * 86400;
-  const recent = (sigs ?? []).filter((s) => s.blockTime >= cutoff && !s.err);
+  // 3. 直近30日の署名（失敗した場合は取引由来の指標が全て null になる）
+  let recent = [];
+  try {
+    const sigs = await rpc("getSignaturesForAddress", [addr, { limit: 200 }]);
+    const cutoff = Date.now() / 1000 - 30 * 86400;
+    recent = (sigs ?? []).filter((s) => s.blockTime >= cutoff && !s.err);
+  } catch (e) {
+    warnings.push(`getSignaturesForAddress failed: ${e.message}`);
+  }
 
   // 4. サンプル tx をパースして「ミント別の残高変化の時系列」を作る
   const sample = recent.slice(0, TX_SAMPLE);
@@ -168,14 +183,17 @@ export async function getWalletStats(addr) {
   const winrate = total > 0 ? parseFloat(((wins / total) * 100).toFixed(1)) : null;
 
   return {
-    unrealized_profit: unrealizedUsd > 0 ? unrealizedUsd.toFixed(0) : null,
-    winrate,
-    buy_30d: Math.round(recent.length * 0.55),
-    sell_30d: Math.round(recent.length * 0.45),
-    avg_hold_duration: avgHoldHours != null ? parseFloat(avgHoldHours.toFixed(1)) : null,
-    trade_count_30d: recent.length,
-    short_term_ratio: shortTermRatio != null ? parseFloat(shortTermRatio.toFixed(2)) : null,
-    daily_trades: recent.length > 0 ? parseFloat((recent.length / 30).toFixed(1)) : null,
+    data: {
+      unrealized_profit: unrealizedUsd > 0 ? unrealizedUsd.toFixed(0) : null,
+      winrate,
+      buy_30d: Math.round(recent.length * 0.55),
+      sell_30d: Math.round(recent.length * 0.45),
+      avg_hold_duration: avgHoldHours != null ? parseFloat(avgHoldHours.toFixed(1)) : null,
+      trade_count_30d: recent.length,
+      short_term_ratio: shortTermRatio != null ? parseFloat(shortTermRatio.toFixed(2)) : null,
+      daily_trades: recent.length > 0 ? parseFloat((recent.length / 30).toFixed(1)) : null,
+    },
+    warnings,
   };
 }
 

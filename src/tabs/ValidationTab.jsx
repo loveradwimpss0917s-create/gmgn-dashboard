@@ -22,7 +22,7 @@ const PAST_TRADERS = [
 const MANUAL_FIELDS = [
   ["holdDays", "保有（日）★最重要w35%"],
   ["winRate", "勝率（%）"],
-  ["dailyTrades", "取引（回/日）"],
+  ["trades30d", "取引回数（30日）"],
   ["unrealized", "未実現（$）"],
   ["realized", "実現PnL（$）"],
 ];
@@ -30,7 +30,7 @@ const MANUAL_FIELDS = [
 export default function ValidationTab({ onSaved }) {
   const [wallet, setWallet] = useState("");
   const [name, setName] = useState("");
-  const [m, setM] = useState({ holdDays: "", winRate: "", dailyTrades: "", unrealized: "", realized: "" });
+  const [m, setM] = useState({ holdDays: "", winRate: "", trades30d: "", unrealized: "", realized: "" });
   const [monthly, setMonthly] = useState("");
   const [rpcStats, setRpcStats] = useState(null);
   const [verdict, setVerdict] = useState(null);
@@ -46,13 +46,14 @@ export default function ValidationTab({ onSaved }) {
       .split(/[,、\s]+/)
       .map((x) => parseFloat(x))
       .filter((x) => Number.isFinite(x));
+    const trades30d = num(m.trades30d);
     return {
       address: addr,
       label: name || null,
       avgHoldingHours: num(m.holdDays) != null ? num(m.holdDays) * 24 : null,
       winRate: num(m.winRate),
-      dailyTrades: num(m.dailyTrades),
-      tradeCount30d: num(m.dailyTrades) != null ? Math.round(num(m.dailyTrades) * 30) : null,
+      dailyTrades: trades30d != null ? parseFloat((trades30d / 30).toFixed(2)) : null,
+      tradeCount30d: trades30d != null ? Math.round(trades30d) : null,
       realizedPnlUsd: num(m.realized),
       unrealizedPnlUsd: num(m.unrealized),
       shortTermRatio: null,

@@ -77,7 +77,8 @@ export default function ValidationTab({ onSaved }) {
       setRpcStats(rs);
       const filled = ["avgHoldingHours", "winRate", "dailyTrades", "unrealizedPnlUsd"]
         .filter((k) => rs?.[k] != null).length;
-      setStatus({ ok: true, msg: `✅ RPC取得成功（${filled}/4項目・推計値）` });
+      const warn = json?._warnings?.length ? `（一部データ取得失敗: ${json._warnings.length}件）` : "";
+      setStatus({ ok: true, msg: `✅ RPC取得成功（${filled}/4項目・推計値）${warn}` });
       return rs;
     } catch (e) {
       setStatus({ ok: false, msg: `❌ RPC取得失敗: ${e.message}（手動値のみで分析可能）` });

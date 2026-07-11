@@ -17,7 +17,7 @@ export async function onRequest(context) {
   if (hit) return hit;
 
   try {
-    const data = await getWalletStats(addr);
+    const { data, warnings } = await getWalletStats(addr);
     const res = jsonResponse(
       {
         data,
@@ -26,6 +26,7 @@ export async function onRequest(context) {
           Object.values(data).filter((v) => v != null).length /
           Object.keys(data).length,
         _fetchedAt: new Date().toISOString(),
+        _warnings: warnings.length > 0 ? warnings : undefined,
       },
       200,
       { "Cache-Control": "public, max-age=60" },

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { evaluate } from "../src/engine/verdict.js";
 import { mergeStats, rpcToStats } from "../src/engine/merge.js";
 import { holdingScore, winRateScore, riskScore } from "../src/engine/score.js";
+import { suggestPositionSize } from "../src/engine/sizing.js";
 
 const RULES = { buySOL: 0.3, slPct: -60, tpPct: null };
 
@@ -153,4 +154,38 @@ test("riskScore bands", () => {
   assert.equal(riskScore(-90, 1000), 85);
   assert.equal(riskScore(-600, 1000), 0);
   assert.equal(riskScore(null, 1000), null);
+});
+
+// ポジションサイジング
+test("suggestPositionSize scales with bankroll and SL, roughly matches the user's existing 0.3 SOL rule", () => {
+  const r = suggestPositionSize({ bankrollSol: 3.4123, riskPerTradePct: 5, slPct: -60, grade: "A" });
+  assert.ok(r.sizeSol > 0.2 && r.sizeSol < 0.35, `expected ~0.28 SOL, got ${r.sizeSol}`);
+});
+
+test("suggestPositionSize scales down for lower-grade traders", () => {
+  const a = suggestPositionSize({ bankrollSol: 5, riskPerTradePct: 5, slPct: -60, grade: "A" });
+  const c = suggestPositionSize({ bankrollSol: 5, riskPerTradePct: 5, slPct: -60, grade: "C" });
+  assert.ok(c.sizeSol < a.sizeSol);
+});
+
+test("suggestPositionSize returns 0 for grade D and warns to avoid copying", () => {
+  const r = suggestPositionSize({ bankrollSol: 5, riskPerTradePct: 5, slPct: -60, grade: "D" });
+  assert.equal(r.sizeSol, 0);
+  assert.ok(r.warnings.length > 0);
+});
+
+test("suggestPositionSize warns when bankroll is below the critical threshold", () => {
+  const r = suggestPositionSize({ bankrollSol: 0.5, riskPerTradePct: 5, slPct: -60, grade: "A" });
+  assert.ok(r.warnings.some((w) => w.includes("危険水準")));
+});
+
+test("suggestPositionSize returns 0 (not full size) when grade is unknown", () => {
+  const r = suggestPositionSize({ bankrollSol: 5, riskPerTradePct: 5, slPct: -60, grade: null });
+  assert.equal(r.sizeSol, 0);
+  assert.ok(r.warnings.some((w) => w.includes("未評価")));
+});
+
+test("suggestPositionSize returns null when required inputs are missing", () => {
+  assert.equal(suggestPositionSize({ bankrollSol: null, riskPerTradePct: 5, slPct: -60, grade: "A" }), null);
+  assert.equal(suggestPositionSize({ bankrollSol: 3, riskPerTradePct: 5, slPct: null, grade: "A" }), null);
 });

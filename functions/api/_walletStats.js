@@ -1,20 +1,44 @@
 // 共有ウォレット統計ロジック（DESIGN.md §4.2）
 // _prefix のファイルは Pages Functions のルーティング対象外
 
-const RPC = "https://api.mainnet-beta.solana.com";
+// api.mainnet-beta.solana.com は Cloudflare 等のデータセンターIPを
+// 「Your IP or provider is blocked from this endpoint」でブロックするため、
+// 無料・無認証の公開RPCを複数用意しフォールバックする（優先順）
+const RPC_ENDPOINTS = [
+  "https://solana-rpc.publicnode.com",
+  "https://rpc.ankr.com/solana",
+  "https://solana.drpc.org",
+  "https://api.mainnet-beta.solana.com",
+];
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TX_SAMPLE = 40;
 const CONCURRENCY = 5;
 
+// 直近で成功したエンドポイントを Worker インスタンス内で記憶し、次回はそこから試す
+let preferredEndpoint = 0;
+
 async function rpc(method, params) {
-  const r = await fetch(RPC, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const j = await r.json();
-  if (j.error) throw new Error(`RPC ${method}: ${j.error.message}`);
-  return j.result;
+  let lastErr;
+  for (let i = 0; i < RPC_ENDPOINTS.length; i++) {
+    const idx = (preferredEndpoint + i) % RPC_ENDPOINTS.length;
+    try {
+      const r = await fetch(RPC_ENDPOINTS[idx], {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      const j = await r.json();
+      if (j.error) {
+        lastErr = new Error(`RPC ${method} @ ${RPC_ENDPOINTS[idx]}: ${j.error.message}`);
+        continue;
+      }
+      preferredEndpoint = idx;
+      return j.result;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr ?? new Error(`RPC ${method} failed on all endpoints`);
 }
 
 /** 並列数を制限して map する（公開RPCの429対策） */

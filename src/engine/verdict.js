@@ -5,14 +5,6 @@ import { classify } from "./classify.js";
 import { componentScores, totalScore, gradeOf } from "./score.js";
 import { buildReasons } from "./reasons.js";
 
-const CORE_METRICS = [
-  "avgHoldingHours",
-  "winRate",
-  "dailyTrades",
-  "unrealizedPnlUsd",
-  "monthlyPnl",
-];
-
 const GATE_JA = {
   G1_SCALP_HOLD: "G1保有時間",
   G2_SCALP_RATIO: "G2短期比率",
@@ -30,12 +22,10 @@ export function evaluate(stats, rules) {
   const evaluatedAt = new Date().toISOString();
   const strategyType = classify(stats);
 
-  // (1) データ充足チェック
-  const nullCount = CORE_METRICS.filter((k) => stats[k] == null).length;
-  if (
-    (stats.tradeCount30d != null && stats.tradeCount30d < 5) ||
-    nullCount >= 3
-  ) {
+  // (1) データ充足チェック: 取引数が極端に少ない場合のみここで打ち切る。
+  // 個々の指標の欠損は (5) の重み付き completeness チェックに委ねる — そちらは
+  // monthlyPnl（RPC単独では原理的に取得不能）のような欠損を過度に罰しない。
+  if (stats.tradeCount30d != null && stats.tradeCount30d < 5) {
     const base = {
       decision: "INSUFFICIENT_DATA",
       strategyType: "UNKNOWN",

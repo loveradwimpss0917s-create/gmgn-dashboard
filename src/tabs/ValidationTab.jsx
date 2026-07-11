@@ -20,7 +20,7 @@ const PAST_TRADERS = [
 ];
 
 const MANUAL_FIELDS = [
-  ["holdDays", "保有（日）"],
+  ["holdDays", "保有（日）★最重要w35%"],
   ["winRate", "勝率（%）"],
   ["dailyTrades", "取引（回/日）"],
   ["unrealized", "未実現（$）"],
@@ -163,7 +163,7 @@ export default function ValidationTab({ onSaved }) {
           ))}
           <div>
             <div style={{ fontSize: 9, color: MUTE, marginBottom: 2 }}>月次PnL（カンマ区切り）</div>
-            <input placeholder="1200,-300,800" value={monthly}
+            <input placeholder="例: 1200,-300,800（未入力可）" value={monthly}
               onChange={(e) => setMonthly(e.target.value)} style={inp} />
           </div>
         </div>

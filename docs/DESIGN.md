@@ -169,13 +169,15 @@ interface Verdict {
 
 ```
 TraderStats
-  → (1) データ充足チェック   tradeCount30d < 5 or 主要指標が3つ以上 null
-                              → INSUFFICIENT_DATA で終了
+  → (1) 取引数チェック       tradeCount30d < 5 → INSUFFICIENT_DATA で終了
+                              （個々の指標の欠損は (5) の重み付きチェックに委ねる。
+                               monthlyPnl は RPC単独では原理的に取得不能なため、
+                               主要指標カウントに含めて一律に落とすと過度に厳しくなる）
   → (2) NG ゲート (gates.js)  1つでも該当 → decision=NG, totalScore=0,
                               grade=D で終了（分類だけは実行して表示）
   → (3) 分類 (classify.js)
   → (4) 成分スコア計算 (score.js)
-  → (5) 総合スコア・グレード
+  → (5) 総合スコア・グレード。dataCompleteness < 0.5 → INSUFFICIENT_DATA
   → (6) 判定 (verdict.js)
   → (7) 理由文生成 (reasons.js)
 ```

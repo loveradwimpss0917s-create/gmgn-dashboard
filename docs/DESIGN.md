@@ -367,12 +367,13 @@ function totalScore(components) {
 
 **追加実装仕様（既存コードからの差分）:**
 
-- `avg_hold_duration`（時間単位）: 現在 `null`。以下のアルゴリズムで**推計値**を返す：
-  1. 直近 200 署名からパース済み 40 tx のトークン残高変化を時系列に整列
+- `avg_hold_duration`（時間単位）: 以下のアルゴリズムで**推計値**を返す：
+  1. 直近 200 署名から、サブリクエスト予算の範囲内（最大60件）でパースした tx のトークン残高変化を時系列に整列
   2. ミントごとに「残高が 0→正 になった時刻（初回買い）」と「正→減少した時刻（売り）」をペアリング
-  3. ペア成立したものの保有時間の中央値を返す。ペアが 3 組未満なら `null`
-- `short_term_ratio`: 上記ペアのうち保有 < 1h の比率。ペア 3 組未満なら `null`
-- RPC レート制限対策: `getTransaction` の並列数を 5 に制限（現在は40並列 → 429 の温床）。`Promise.allSettled` をチャンク実行に変更
+  3. ペア成立したものの保有時間の中央値を返す。ペアが `MIN_HOLD_PAIRS`（2）組未満なら `null`。ちょうど2組の場合は参考値として `_warnings` に記録する
+- `short_term_ratio`: 上記ペアのうち保有 < 1h の比率。ペアが `MIN_HOLD_PAIRS` 未満なら `null`
+- RPC レート制限・ブロック対策: 無料公開RPCを複数（PublicNode/Ankr/dRPC/公式）フォールバックし、成功したエンドポイントを次回優先。`getTokenAccountsByOwner` のような広く制限されがちな高コストメソッドは試行数を絞り、失敗時は SolanaFM のベストエフォート・フォールバックを試す。`getTransaction` の並列数は 5 に制限
+- サブリクエスト予算管理: Cloudflare Pages Functions の1リクエストあたり外部fetch数上限を踏まえ、リクエスト単位で予算（45件目安）を管理し、tx サンプル数を動的に調整する。予算で切り詰めた場合は `_warnings` に記録
 - 60 秒キャッシュ: `caches.default`（Cloudflare Cache API）に `Cache-Control: max-age=60` で格納
 
 ### 4.3 POST `/api/analyze`

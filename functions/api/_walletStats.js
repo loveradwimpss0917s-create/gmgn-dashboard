@@ -11,17 +11,38 @@ const RPC_ENDPOINTS = [
   "https://api.mainnet-beta.solana.com",
 ];
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-const TX_SAMPLE = 40;
+const TX_SAMPLE_MAX = 60;
 const CONCURRENCY = 5;
+// Cloudflare Pages Functions は1リクエストあたりの外部fetch数に上限がある
+// （無料プランは目安50件）。フォールバック再試行込みでも超えないよう保守的に予算管理する。
+const SUBREQUEST_BUDGET = 45;
+// 保有時間・短期比率の推計に必要な最小ペア数。3だと安全だが多くのウォレットで
+// null になりがちなため2に緩め、2件のみの場合は参考値としてwarningsに記録する。
+const MIN_HOLD_PAIRS = 2;
 
-// 直近で成功したエンドポイントを Worker インスタンス内で記憶し、次回はそこから試す
+// 直近で成功したエンドポイントを Worker インスタンス内で記憶し、次回の呼び出しの
+// ヒントに使う（複数リクエストが同一インスタンスで並行実行されても、単なる
+// 開始位置の最適化ヒントなので競合しても実害はない）
 let preferredEndpoint = 0;
 
-async function rpc(method, params) {
+/**
+ * @param ctx リクエスト単位のサブリクエスト予算カウンタ { count } 。
+ *   並行実行されるリクエスト間で予算が競合しないよう、呼び出し元で
+ *   1回の getWalletStats 呼び出しごとに新しいオブジェクトを渡すこと。
+ * @param maxAttempts 試行するエンドポイント数の上限（省略時は全件）。
+ *   getTokenAccountsByOwner のように広く制限されがちな高コストメソッドは
+ *   試行数を絞り、他の呼び出しのためのサブリクエスト予算を温存する。
+ */
+async function rpc(ctx, method, params, maxAttempts = RPC_ENDPOINTS.length) {
   let lastErr;
-  for (let i = 0; i < RPC_ENDPOINTS.length; i++) {
+  const attempts = Math.min(maxAttempts, RPC_ENDPOINTS.length);
+  for (let i = 0; i < attempts; i++) {
+    if (ctx.count >= SUBREQUEST_BUDGET) {
+      throw lastErr ?? new Error("subrequest budget exhausted");
+    }
     const idx = (preferredEndpoint + i) % RPC_ENDPOINTS.length;
     try {
+      ctx.count++;
       const r = await fetch(RPC_ENDPOINTS[idx], {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -68,6 +89,29 @@ function median(arr) {
 }
 
 /**
+ * SolanaFM の無認証パブリックエンドポイントを使ったトークン保有量の代替取得。
+ * getTokenAccountsByOwner が全RPCで失敗した場合のみのベストエフォート・フォールバック。
+ * レスポンス形が変わっている/失敗する可能性があるため、常に静かに失敗を許容する。
+ */
+async function fetchHoldingsFallback(ctx, addr) {
+  try {
+    ctx.count++;
+    const r = await fetch(`https://api.solana.fm/v0/accounts/${addr}/tokens`);
+    if (!r.ok) return [];
+    const j = await r.json();
+    const list = j?.tokens ?? j?.data ?? [];
+    return list
+      .map((t) => ({
+        mint: t.mint ?? t.tokenAddress ?? t.address,
+        amount: parseFloat(t.balance ?? t.amount ?? t.uiAmount ?? 0),
+      }))
+      .filter((h) => h.mint && h.amount > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Solana RPC + Jupiter からウォレット30日統計を計算する。
  * 各フェーズは独立して失敗しうる（無料公開RPCは getTokenAccountsByOwner のような
  * 高コストなメソッドを個別に拒否・制限することがあるため）。1フェーズの失敗で
@@ -76,15 +120,18 @@ function median(arr) {
  */
 export async function getWalletStats(addr) {
   const warnings = [];
+  const ctx = { count: 0 }; // このリクエスト専用のサブリクエスト予算カウンタ
 
   // 1. トークン保有（失敗しても未実現損益が null になるだけで続行）
+  // 広く制限されがちなメソッドのため試行数を2に絞り、予算を温存する
   let holdings = [];
   try {
-    const tokenAccounts = await rpc("getTokenAccountsByOwner", [
-      addr,
-      { programId: TOKEN_PROGRAM },
-      { encoding: "jsonParsed" },
-    ]);
+    const tokenAccounts = await rpc(
+      ctx,
+      "getTokenAccountsByOwner",
+      [addr, { programId: TOKEN_PROGRAM }, { encoding: "jsonParsed" }],
+      2,
+    );
     holdings = (tokenAccounts?.value ?? [])
       .map((a) => {
         const info = a.account.data.parsed.info;
@@ -96,6 +143,8 @@ export async function getWalletStats(addr) {
       .filter((h) => h.amount > 0);
   } catch (e) {
     warnings.push(`getTokenAccountsByOwner failed: ${e.message}`);
+    holdings = await fetchHoldingsFallback(ctx, addr);
+    if (holdings.length > 0) warnings.push("holdings recovered via SolanaFM fallback");
   }
 
   // 2. Jupiter 価格 → 含み評価額
@@ -103,6 +152,7 @@ export async function getWalletStats(addr) {
   if (holdings.length > 0) {
     const mints = holdings.map((h) => h.mint).slice(0, 100).join(",");
     try {
+      ctx.count++;
       const priceRes = await fetch(`https://price.jup.ag/v6/price?ids=${mints}`);
       const priceData = await priceRes.json();
       for (const h of holdings) {
@@ -115,7 +165,7 @@ export async function getWalletStats(addr) {
   // 3. 直近30日の署名（失敗した場合は取引由来の指標が全て null になる）
   let recent = [];
   try {
-    const sigs = await rpc("getSignaturesForAddress", [addr, { limit: 200 }]);
+    const sigs = await rpc(ctx, "getSignaturesForAddress", [addr, { limit: 200 }]);
     const cutoff = Date.now() / 1000 - 30 * 86400;
     recent = (sigs ?? []).filter((s) => s.blockTime >= cutoff && !s.err);
   } catch (e) {
@@ -123,9 +173,12 @@ export async function getWalletStats(addr) {
   }
 
   // 4. サンプル tx をパースして「ミント別の残高変化の時系列」を作る
-  const sample = recent.slice(0, TX_SAMPLE);
+  // 残りのサブリクエスト予算に応じてサンプル数を動的に決める（多いほど
+  // 保有時間・勝率の推計精度が上がるため、予算が許す限り増やす）
+  const budgetLeft = Math.max(0, SUBREQUEST_BUDGET - ctx.count - 2);
+  const sample = recent.slice(0, Math.min(TX_SAMPLE_MAX, budgetLeft));
   const parsed = await mapLimited(sample, CONCURRENCY, (sig) =>
-    rpc("getTransaction", [
+    rpc(ctx, "getTransaction", [
       sig.signature,
       { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
     ]),
@@ -173,11 +226,19 @@ export async function getWalletStats(addr) {
       if (e.post === 0) delete openBuy[e.mint];
     }
   }
-  const avgHoldHours = holdHours.length >= 3 ? median(holdHours) : null;
+  const avgHoldHours = holdHours.length >= MIN_HOLD_PAIRS ? median(holdHours) : null;
   const shortTermRatio =
-    holdHours.length >= 3
+    holdHours.length >= MIN_HOLD_PAIRS
       ? holdHours.filter((h) => h < 1).length / holdHours.length
       : null;
+  if (holdHours.length === MIN_HOLD_PAIRS) {
+    warnings.push("avg_hold_duration is based on only 2 trade pairs (low confidence)");
+  }
+  if (sample.length < recent.length) {
+    warnings.push(
+      `tx sample limited to ${sample.length}/${recent.length} by subrequest budget`,
+    );
+  }
 
   const total = wins + losses;
   const winrate = total > 0 ? parseFloat(((wins / total) * 100).toFixed(1)) : null;

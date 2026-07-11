@@ -7,17 +7,23 @@ const K_TRADERS = "gmgn.traders.v1";
 const K_POOL = "gmgn.pool.v1";
 const K_RULES = "gmgn.rules.v1";
 const K_ALERTS = "gmgn.alerts.v1";
+const K_ACTIVE_COPY = "gmgn.activeCopy.v1";
 
-const DEFAULT_RULES = { buySOL: 0.3, slPct: -60, tpPct: null, devSellPct: 25, autoSellPct: 100 };
+// riskPerTradePct: 1トレードで許容する残高比率（%）。ポジションサイジング計算に使用
+const DEFAULT_RULES = { buySOL: 0.3, slPct: -60, tpPct: null, devSellPct: 25, autoSellPct: 100, riskPerTradePct: 5 };
 
 export const loadTraders = () => load(K_TRADERS, {});
 export const loadPool = () => load(K_POOL, []);
 export const loadRules = () => ({ ...DEFAULT_RULES, ...load(K_RULES, {}) });
 export const loadAlerts = () => load(K_ALERTS, []);
+// 現在GMGNで実際にコピー中のトレーダーのウォレットアドレス。設定するとHomeタブが
+// 実データ(RPC/手動)で再評価し、Risk Panelの自動監視対象になる
+export const loadActiveCopy = () => load(K_ACTIVE_COPY, { address: null });
 
 export const savePool = (pool) => save(K_POOL, pool);
 export const saveRules = (rules) => save(K_RULES, rules);
 export const saveAlerts = (alerts) => save(K_ALERTS, alerts);
+export const saveActiveCopy = (activeCopy) => save(K_ACTIVE_COPY, activeCopy);
 
 const NG_TYPES = ["SCALPING", "GAMBLER"];
 

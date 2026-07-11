@@ -11,6 +11,10 @@ const RPC_ENDPOINTS = [
   "https://api.mainnet-beta.solana.com",
 ];
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+// ラップドSOL。ほぼ全てのスワップがルーティングの都合でSOL⇄WSOLを一時的に
+// 経由するため、保有時間・勝率の推計対象からは除外する（実際のトレード対象
+// トークンではなく、経路上の一瞬の残高変化を「即売買」と誤検知してしまうため）
+const WSOL_MINT = "So11111111111111111111111111111111111111112";
 const TX_SAMPLE_MAX = 60;
 const CONCURRENCY = 5;
 // Cloudflare Pages Functions は1リクエストあたりの外部fetch数に上限がある
@@ -184,34 +188,34 @@ export async function getWalletStats(addr) {
     ]),
   );
 
+  // blockTime が欠けている tx は経過時間を計算できないため除外する
+  // （null同士の差分が 0 になり「即売買」として誤検知されるのを防ぐ）
   const events = []; // {time, mint, pre, post}
-  let wins = 0;
-  let losses = 0;
   for (const tx of parsed) {
-    if (!tx?.meta) continue;
+    if (!tx?.meta || tx.blockTime == null) continue;
     const time = tx.blockTime;
     const changes = {};
     for (const b of tx.meta.preTokenBalances ?? []) {
-      if (b.owner !== addr) continue;
+      if (b.owner !== addr || b.mint === WSOL_MINT) continue;
       changes[b.mint] = changes[b.mint] ?? { pre: 0, post: 0 };
       changes[b.mint].pre = parseFloat(b.uiTokenAmount?.uiAmountString ?? 0);
     }
     for (const b of tx.meta.postTokenBalances ?? []) {
-      if (b.owner !== addr) continue;
+      if (b.owner !== addr || b.mint === WSOL_MINT) continue;
       changes[b.mint] = changes[b.mint] ?? { pre: 0, post: 0 };
       changes[b.mint].post = parseFloat(b.uiTokenAmount?.uiAmountString ?? 0);
     }
-    const mints = Object.keys(changes);
-    for (const m of mints) {
+    for (const m of Object.keys(changes)) {
       events.push({ time, mint: m, ...changes[m] });
     }
-    // 勝率推計: 同一 tx 内で「得たトークン」と「手放したトークン」があればスワップ
-    if (mints.length >= 2) {
-      const gained = mints.some((m) => changes[m].post > changes[m].pre);
-      const sold = mints.some((m) => changes[m].post < changes[m].pre);
-      if (gained && sold) wins++;
-      else if (sold) losses++;
-    }
+  }
+  // 勝率: RPCの残高差分だけでは「スワップが発生したか」しか分からず「利益が出たか」
+  // は判定できない（買い・売りいずれも一方が増え一方が減るため、ほぼ全スワップが
+  // 「勝ち」に見えてしまう）。誤った高勝率を提示するくらいなら null にして
+  // GMGN画面からの手動入力に委ねる方が安全。
+  const winrate = null;
+  if (recent.length > 0) {
+    warnings.push("winrate cannot be derived from RPC balance deltas alone; enter it manually from the GMGN screen");
   }
 
   // 5. 保有時間推計: ミントごとに「0→正（初回買い）」と「減少（売り）」をペアリング
@@ -240,15 +244,10 @@ export async function getWalletStats(addr) {
     );
   }
 
-  const total = wins + losses;
-  const winrate = total > 0 ? parseFloat(((wins / total) * 100).toFixed(1)) : null;
-
   return {
     data: {
       unrealized_profit: unrealizedUsd > 0 ? unrealizedUsd.toFixed(0) : null,
       winrate,
-      buy_30d: Math.round(recent.length * 0.55),
-      sell_30d: Math.round(recent.length * 0.45),
       avg_hold_duration: avgHoldHours != null ? parseFloat(avgHoldHours.toFixed(1)) : null,
       trade_count_30d: recent.length,
       short_term_ratio: shortTermRatio != null ? parseFloat(shortTermRatio.toFixed(2)) : null,

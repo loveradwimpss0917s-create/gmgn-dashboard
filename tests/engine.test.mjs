@@ -1,0 +1,122 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { evaluate } from "../src/engine/verdict.js";
+import { mergeStats, rpcToStats } from "../src/engine/merge.js";
+import { holdingScore, winRateScore, riskScore } from "../src/engine/score.js";
+
+const RULES = { buySOL: 0.3, slPct: -60, tpPct: null };
+
+const base = {
+  address: "GameTrader1111111111111111111111111111111",
+  label: "Game",
+  avgHoldingHours: null,
+  winRate: null,
+  dailyTrades: null,
+  tradeCount30d: null,
+  realizedPnlUsd: null,
+  unrealizedPnlUsd: null,
+  shortTermRatio: null,
+  monthlyPnl: null,
+  source: "manual",
+  fetchedAt: "2026-07-11T00:00:00Z",
+};
+
+// 受け入れ基準1: 現行コピー中トレーダー（Game）の再現
+test("Game trader (33d hold, 56% WR) → B / SWING_STABLE / COPY_OK|CONDITIONAL", () => {
+  const v = evaluate(
+    {
+      ...base,
+      avgHoldingHours: 792, // 33日
+      winRate: 56,
+      dailyTrades: 0.8,
+      tradeCount30d: 24,
+      unrealizedPnlUsd: 0,
+      realizedPnlUsd: 5000,
+      monthlyPnl: [1200, 800, -300],
+    },
+    RULES,
+  );
+  assert.equal(v.strategyType, "SWING_STABLE");
+  assert.ok(["A", "B"].includes(v.score.grade), `grade was ${v.score.grade}`);
+  assert.ok(
+    ["COPY_OK", "CONDITIONAL"].includes(v.decision),
+    `decision was ${v.decision}`,
+  );
+  assert.ok(v.reasonsJa.length >= 3, "must produce at least 3 reasons");
+});
+
+// 受け入れ基準2: スキャルパー×偽陽性勝率 → G1+G4 落ち
+test("4h hold + 91% WR → NG with G1 and G4 gate failures", () => {
+  const v = evaluate(
+    { ...base, avgHoldingHours: 4, winRate: 91, dailyTrades: 8, tradeCount30d: 240 },
+    RULES,
+  );
+  assert.equal(v.decision, "NG");
+  assert.equal(v.score.totalScore, 0);
+  assert.equal(v.score.grade, "D");
+  const ids = v.gate.failures.map((f) => f.gateId);
+  assert.ok(ids.includes("G1_SCALP_HOLD"), `gates hit: ${ids}`);
+  assert.ok(ids.includes("G4_FAKE_WINRATE"), `gates hit: ${ids}`);
+  assert.equal(v.strategyType, "SCALPING");
+});
+
+// 受け入れ基準3: 全指標 null → INSUFFICIENT_DATA
+test("all-null stats → INSUFFICIENT_DATA (not score 0)", () => {
+  const v = evaluate({ ...base }, RULES);
+  assert.equal(v.decision, "INSUFFICIENT_DATA");
+  assert.equal(v.score.totalScore, null);
+});
+
+// 受け入れ基準4: RPC全滅でも手動値のみで完走
+test("manual-only stats complete the pipeline", () => {
+  const manual = {
+    ...base,
+    avgHoldingHours: 20 * 24,
+    winRate: 60,
+    dailyTrades: 1.2,
+    unrealizedPnlUsd: -50,
+  };
+  const merged = mergeStats(manual, null);
+  assert.equal(merged.source, "manual");
+  const v = evaluate(merged, RULES);
+  assert.notEqual(v.decision, "INSUFFICIENT_DATA");
+  assert.ok(v.score.totalScore > 0);
+});
+
+// マージ: manual がフィールド単位で rpc に勝つ
+test("mergeStats prefers manual per-field", () => {
+  const rpc = rpcToStats("addr", {
+    winrate: 40,
+    avg_hold_duration: 100,
+    buy_30d: 15,
+    sell_30d: 15,
+    unrealized_profit: "500",
+  });
+  const merged = mergeStats({ ...base, winRate: 62 }, rpc);
+  assert.equal(merged.winRate, 62); // manual勝ち
+  assert.equal(merged.avgHoldingHours, 100); // rpc補完
+  assert.equal(merged.unrealizedPnlUsd, 500);
+  assert.equal(merged.source, "merged");
+});
+
+// スコア形状の要点
+test("holdingScore ideal band and taper", () => {
+  assert.equal(holdingScore(14 * 24), 100);
+  assert.equal(holdingScore(33 * 24), 100); // 現行Gameの33日は満点帯
+  assert.equal(holdingScore(45 * 24), 100);
+  assert.ok(holdingScore(90 * 24) < 70);
+  assert.ok(holdingScore(24) <= 10);
+});
+
+test("winRateScore distrusts extreme winrates", () => {
+  assert.ok(winRateScore(60, 30 * 24) > winRateScore(90, 30 * 24));
+  assert.equal(winRateScore(70, 200), 100); // 長期×高勝率は本物
+  assert.equal(winRateScore(70, 100), 70); // 短中期の高勝率は割引
+});
+
+test("riskScore bands", () => {
+  assert.equal(riskScore(100, 1000), 100);
+  assert.equal(riskScore(-90, 1000), 85);
+  assert.equal(riskScore(-600, 1000), 0);
+  assert.equal(riskScore(null, 1000), null);
+});

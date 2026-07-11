@@ -1,13 +1,11 @@
 import { useState } from "react";
+import { G, Y, R, MUTE, inp, cardStyle, btnStyle, load, save } from "./ui.js";
+import HomeTab from "./tabs/HomeTab.jsx";
+import DiscoveryTab from "./tabs/DiscoveryTab.jsx";
+import ValidationTab from "./tabs/ValidationTab.jsx";
+import ComparisonTab from "./tabs/ComparisonTab.jsx";
 
 // ── 定数 ──────────────────────────────────────────────
-const CRITERIA = [
-  { id: "hold",       label: "30d平均保有時間", unit: "日", min: 3,    ideal: 5,  weight: 3 },
-  { id: "trades",     label: "1日取引数",       unit: "回", max: 30,   ideal: 10, weight: 2, inverse: true },
-  { id: "winrate",    label: "勝率",            unit: "%",  min: 55,   ideal: 65, weight: 3 },
-  { id: "unrealized", label: "未実現損益",       unit: "$",  min: -500, ideal: 0,  weight: 2 },
-];
-
 const SETTINGS = [
   { label: "購入金額",          value: "0.3 SOL（最大購入金額モード）" },
   { label: "Increase Times",   value: "なし" },
@@ -23,17 +21,6 @@ const SETTINGS = [
   { label: "ブーストモード（売）", value: "Sec." },
 ];
 
-const PAST_TRADERS = [
-  { name: "追跡 勝率9割",  verdict: "❌", reason: "保有6秒スキャルピング" },
-  { name: "D8n8…anS4",   verdict: "❌", reason: "短期混在・遅延負け" },
-  { name: "6Myw…RU1G",   verdict: "△",  reason: "未実現-$9.7K・短期混在" },
-  { name: "Doji",         verdict: "❌", reason: "平均保有13分" },
-  { name: "Game",         verdict: "✅", reason: "平均保有33日・未実現+$0・安定", active: true },
-  { name: "次候補2",      verdict: "❌", reason: "11分保有混在・遅延12%ズレ" },
-  { name: "Ax.",          verdict: "△",  reason: "3月大幅マイナス・様子見" },
-  { name: "Gghj…c6FN",  verdict: "❌", reason: "実態1〜10分スキャルピング" },
-];
-
 const LESSONS = [
   "平均保有時間が長いほど遅延の影響が小さい",
   "未実現損益がマイナス大＝塩漬けスタイルは危険",
@@ -43,243 +30,8 @@ const LESSONS = [
   "ATM出金は必ず「Accept without conversion」",
 ];
 
-// ── カラー ────────────────────────────────────────────
-const G = "#00e5a0";
-const Y = "#f5c542";
-const R = "#ff5252";
-
-// ── 共通スタイル ──────────────────────────────────────
-const inp = {
-  width: "100%", boxSizing: "border-box",
-  background: "rgba(255,255,255,0.06)",
-  border: "1px solid rgba(255,255,255,0.12)",
-  borderRadius: 8, padding: "9px 11px",
-  color: "#e8f0ff", fontSize: 12, outline: "none",
-};
-const cardStyle = (extra = {}) => ({
-  background: "rgba(255,255,255,0.04)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: 12, padding: "14px 16px", ...extra,
-});
-const btnStyle = (c) => ({
-  width: "100%", marginTop: 8, padding: 10,
-  background: c + "22", border: `1px solid ${c}44`,
-  borderRadius: 8, color: c, fontSize: 12,
-  fontWeight: 700, cursor: "pointer",
-});
-
-// ── スコア計算 ────────────────────────────────────────
-function calcScore(v) {
-  let total = 0, max = 0;
-  CRITERIA.forEach(c => {
-    max += c.weight * 10;
-    const n = parseFloat(v[c.id] || "");
-    if (isNaN(n)) return;
-    let s = 0;
-    if (c.id === "trades")     s = n <= c.ideal ? 10 : n <= c.max ? 6 : 2;
-    else if (c.id === "unrealized") s = n >= 0 ? 10 : n >= c.min ? 6 : 2;
-    else                       s = n >= c.ideal ? 10 : n >= c.min ? 6 : 2;
-    total += s * c.weight;
-  });
-  return Math.round((total / max) * 100);
-}
-
-// ── localStorage ユーティリティ ───────────────────────
-function load(key, fallback) {
-  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
-}
-function save(key, val) {
-  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
-}
-
 // ══════════════════════════════════════════════════════
-//  タブ1: トレーダー評価
-// ══════════════════════════════════════════════════════
-function EvalTab() {
-  const [v, setV]         = useState({ hold: "", trades: "", winrate: "", unrealized: "" });
-  const [name, setName]   = useState("");
-  const [wallet, setWallet] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [fetchStatus, setFetchStatus] = useState(null);
-  const [saved, setSaved] = useState(() => load("gmgn_evals", []));
-
-  const score   = calcScore(v);
-  const sc      = score >= 70 ? G : score >= 45 ? Y : R;
-  const verdict = score >= 70 ? "✅ 採用候補" : score >= 45 ? "△ 要観察" : "❌ 不採用";
-
-  async function fetchWallet() {
-    const addr = wallet.trim();
-    if (!addr) return;
-    setLoading(true);
-    setFetchStatus(null);
-    try {
-      const res = await fetch(`/api/wallet/${addr}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      const d = json?.data || json;
-
-      // avg hold time: try multiple field names, value may be in seconds or hours
-      const rawHold = d.avg_hold_duration ?? d.avg_holding_time ?? d.avg_hold_time
-        ?? d.holding_period ?? d.avg_holding_period ?? null;
-      let holdDays = "";
-      if (rawHold != null && rawHold > 0) {
-        // if value > 365 treat as seconds, else as hours, else as days
-        holdDays = rawHold > 365
-          ? (rawHold / 86400).toFixed(1)
-          : rawHold > 24
-            ? (rawHold / 24).toFixed(1)
-            : rawHold.toFixed(1);
-      }
-
-      // daily trade count
-      const buy  = d.buy_30d ?? d.buy ?? 0;
-      const sell = d.sell_30d ?? d.sell ?? 0;
-      const dailyTrades = (buy || sell)
-        ? ((Number(buy) + Number(sell)) / 30).toFixed(1) : "";
-
-      // win rate
-      const rawWr = d.winrate ?? d.win_rate ?? d.winRate ?? null;
-      const winrate = rawWr != null
-        ? (rawWr <= 1 ? (rawWr * 100).toFixed(1) : Number(rawWr).toFixed(1)) : "";
-
-      // unrealized PnL
-      const rawUnreal = d.unrealized_profit ?? d.unrealizedProfit ?? d.unrealized_pnl ?? null;
-      const unrealized = rawUnreal != null ? parseFloat(rawUnreal).toFixed(0) : "";
-
-      const filled = [holdDays, dailyTrades, winrate, unrealized].filter(Boolean).length;
-      setV({ hold: holdDays, trades: dailyTrades, winrate, unrealized });
-      if (!name) setName(addr.slice(0, 6) + "…" + addr.slice(-4));
-      setFetchStatus({ ok: true, msg: `✅ データ取得成功（${filled}/4項目）` });
-    } catch (e) {
-      setFetchStatus({ ok: false, msg: `❌ 取得失敗: ${e.message}` });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function saveEntry() {
-    if (!name.trim()) return;
-    const next = [{ name, score, verdict, date: new Date().toLocaleDateString("ja-JP"), id: Date.now() }, ...saved];
-    setSaved(next); save("gmgn_evals", next);
-    setName(""); setWallet(""); setV({ hold: "", trades: "", winrate: "", unrealized: "" });
-    setFetchStatus(null);
-  }
-  function remove(id) {
-    const next = saved.filter(x => x.id !== id);
-    setSaved(next); save("gmgn_evals", next);
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* ウォレット自動取得 */}
-      <div style={cardStyle({ background: "rgba(0,229,160,0.04)", border: "1px solid rgba(0,229,160,0.15)" })}>
-        <div style={{ fontWeight: 800, fontSize: 13, color: G, marginBottom: 10 }}>⚡ ウォレット自動評価</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            placeholder="Solanaウォレットアドレスをペースト"
-            value={wallet}
-            onChange={e => { setWallet(e.target.value); setFetchStatus(null); }}
-            onKeyDown={e => e.key === "Enter" && fetchWallet()}
-            style={{ ...inp, flex: 1, fontSize: 11 }}
-          />
-          <button
-            onClick={fetchWallet}
-            disabled={loading || !wallet.trim()}
-            style={{
-              padding: "9px 14px", borderRadius: 8, border: `1px solid ${G}44`,
-              background: loading ? "rgba(255,255,255,0.04)" : G + "22",
-              color: loading ? "#8a9bb5" : G,
-              fontSize: 12, fontWeight: 700, cursor: loading ? "default" : "pointer",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {loading ? "取得中…" : "自動取得"}
-          </button>
-        </div>
-        {fetchStatus && (
-          <div style={{ marginTop: 8, fontSize: 11, color: fetchStatus.ok ? G : R }}>
-            {fetchStatus.msg}
-          </div>
-        )}
-      </div>
-
-      {/* 入力フォーム */}
-      <div style={cardStyle()}>
-        <div style={{ fontWeight: 800, fontSize: 13, color: G, marginBottom: 12 }}>🔍 トレーダー評価</div>
-        <input placeholder="トレーダー名（例: Game）" value={name}
-          onChange={e => setName(e.target.value)} style={{ ...inp, marginBottom: 8 }} />
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          {CRITERIA.map(c => (
-            <div key={c.id}>
-              <div style={{ fontSize: 10, color: "#8a9bb5", marginBottom: 3 }}>
-                {c.label}（{c.unit}）
-              </div>
-              <input type="number" value={v[c.id]}
-                onChange={e => setV(p => ({ ...p, [c.id]: e.target.value }))} style={inp} />
-            </div>
-          ))}
-        </div>
-        {/* スコア表示 */}
-        <div style={{ marginTop: 12, padding: "12px 14px", borderRadius: 9,
-          background: sc + "11", border: `1px solid ${sc}33`,
-          display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontSize: 10, color: "#8a9bb5" }}>総合スコア</div>
-            <div style={{ fontSize: 26, fontWeight: 900, color: sc }}>
-              {score}<span style={{ fontSize: 12 }}>点</span>
-            </div>
-          </div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: sc }}>{verdict}</div>
-        </div>
-        <button onClick={saveEntry} style={btnStyle(G)}>保存</button>
-      </div>
-
-      {/* 評価履歴 */}
-      {saved.length > 0 && (
-        <div style={cardStyle()}>
-          <div style={{ fontWeight: 700, fontSize: 12, color: "#8a9bb5", marginBottom: 10 }}>📋 評価履歴</div>
-          {saved.map(s => (
-            <div key={s.id} style={{ display: "flex", justifyContent: "space-between",
-              alignItems: "center", padding: "7px 0",
-              borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-              <div>
-                <span style={{ fontWeight: 700, color: "#e8f0ff", fontSize: 12 }}>{s.name}</span>
-                <span style={{ fontSize: 10, color: "#8a9bb5", marginLeft: 8 }}>{s.date}</span>
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <span style={{ fontSize: 13, fontWeight: 800,
-                  color: s.score >= 70 ? G : s.score >= 45 ? Y : R }}>{s.score}点</span>
-                <span style={{ fontSize: 12 }}>{s.verdict.slice(0, 1)}</span>
-                <button onClick={() => remove(s.id)}
-                  style={{ background: "none", border: "none", color: R + "66", cursor: "pointer", fontSize: 14 }}>×</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 過去トレーダー */}
-      <div style={cardStyle()}>
-        <div style={{ fontWeight: 700, fontSize: 12, color: "#8a9bb5", marginBottom: 10 }}>📜 過去の評価</div>
-        {PAST_TRADERS.map((t, i) => (
-          <div key={i} style={{ display: "flex", gap: 8, alignItems: "center",
-            padding: "6px 8px", borderRadius: 7, marginBottom: 4,
-            background: t.active ? G + "0a" : "transparent",
-            border: t.active ? `1px solid ${G}22` : "1px solid transparent" }}>
-            <span style={{ fontSize: 13 }}>{t.verdict}</span>
-            <span style={{ fontWeight: t.active ? 800 : 600,
-              color: t.active ? G : "#c8d8f0", fontSize: 12, minWidth: 80 }}>{t.name}</span>
-            <span style={{ fontSize: 11, color: "#8a9bb5" }}>{t.reason}</span>
-            {t.active && <span style={{ marginLeft: "auto", fontSize: 10, color: G, fontWeight: 700 }}>コピー中</span>}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════
-//  タブ2: 損益トラッカー
+//  損益トラッカー
 // ══════════════════════════════════════════════════════
 function TrackerTab() {
   const [trades, setTrades] = useState(() => load("gmgn_trades", []));
@@ -321,7 +73,7 @@ function TrackerTab() {
             { l: "遅延負け", v: `${lagLoss}件`, c: "#ff8a65" },
           ].map((s, i) => (
             <div key={i} style={{ ...cardStyle(), textAlign: "center", padding: "10px 6px" }}>
-              <div style={{ fontSize: 10, color: "#8a9bb5", marginBottom: 3 }}>{s.l}</div>
+              <div style={{ fontSize: 10, color: MUTE, marginBottom: 3 }}>{s.l}</div>
               <div style={{ fontSize: 18, fontWeight: 900, color: s.c }}>{s.v}</div>
             </div>
           ))}
@@ -350,7 +102,7 @@ function TrackerTab() {
       {/* 履歴 */}
       {trades.length > 0 && (
         <div style={cardStyle()}>
-          <div style={{ fontWeight: 700, fontSize: 12, color: "#8a9bb5", marginBottom: 10 }}>📊 取引履歴</div>
+          <div style={{ fontWeight: 700, fontSize: 12, color: MUTE, marginBottom: 10 }}>📊 取引履歴</div>
           {trades.map(t => {
             const isLL = t.lag && parseFloat(t.lag) > 1 && t.mPnl && parseFloat(t.mPnl) < 0;
             return (
@@ -360,7 +112,7 @@ function TrackerTab() {
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <div>
                     <span style={{ fontWeight: 800, color: "#e8f0ff", fontSize: 12 }}>{t.coin}</span>
-                    <span style={{ fontSize: 10, color: "#8a9bb5", marginLeft: 8 }}>{t.date}</span>
+                    <span style={{ fontSize: 10, color: MUTE, marginLeft: 8 }}>{t.date}</span>
                     {isLL && <span style={{ marginLeft: 6, fontSize: 9, color: R, fontWeight: 700 }}>⚠遅延負け</span>}
                   </div>
                   <button onClick={() => remove(t.id)}
@@ -368,14 +120,14 @@ function TrackerTab() {
                 </div>
                 <div style={{ display: "flex", gap: 14, marginTop: 5 }}>
                   <span style={{ fontSize: 11 }}>
-                    <span style={{ color: "#8a9bb5" }}>先：</span>
+                    <span style={{ color: MUTE }}>先：</span>
                     <span style={{ color: parseFloat(t.tPnl) >= 0 ? G : R, fontWeight: 700 }}>
                       {parseFloat(t.tPnl) >= 0 ? "+" : ""}{t.tPnl}%
                     </span>
                   </span>
                   {t.mPnl && (
                     <span style={{ fontSize: 11 }}>
-                      <span style={{ color: "#8a9bb5" }}>自分：</span>
+                      <span style={{ color: MUTE }}>自分：</span>
                       <span style={{ color: parseFloat(t.mPnl) >= 0 ? G : R, fontWeight: 700 }}>
                         {parseFloat(t.mPnl) >= 0 ? "+" : ""}{t.mPnl}%
                       </span>
@@ -383,8 +135,8 @@ function TrackerTab() {
                   )}
                   {t.lag && (
                     <span style={{ fontSize: 11 }}>
-                      <span style={{ color: "#8a9bb5" }}>遅延：</span>
-                      <span style={{ color: parseFloat(t.lag) > 2 ? "#ff8a65" : "#8a9bb5", fontWeight: 700 }}>
+                      <span style={{ color: MUTE }}>遅延：</span>
+                      <span style={{ color: parseFloat(t.lag) > 2 ? "#ff8a65" : MUTE, fontWeight: 700 }}>
                         +{t.lag}%
                       </span>
                     </span>
@@ -400,7 +152,7 @@ function TrackerTab() {
 }
 
 // ══════════════════════════════════════════════════════
-//  タブ3: 設定メモ
+//  設定メモ
 // ══════════════════════════════════════════════════════
 function SettingsTab() {
   return (
@@ -411,7 +163,7 @@ function SettingsTab() {
           <div key={i} style={{ display: "flex", justifyContent: "space-between",
             padding: "8px 10px", borderRadius: 7,
             background: i % 2 === 0 ? "rgba(255,255,255,0.04)" : "transparent" }}>
-            <span style={{ fontSize: 11, color: "#8a9bb5" }}>{s.label}</span>
+            <span style={{ fontSize: 11, color: MUTE }}>{s.label}</span>
             <span style={{ fontSize: 11, color: "#e8f0ff", fontWeight: 600 }}>{s.value}</span>
           </div>
         ))}
@@ -432,7 +184,7 @@ function SettingsTab() {
 }
 
 // ══════════════════════════════════════════════════════
-//  タブ4: 残高管理
+//  残高管理
 // ══════════════════════════════════════════════════════
 function BalanceTab() {
   const [bal, setBal]             = useState(() => load("gmgn_sol", 3.4123));
@@ -467,16 +219,16 @@ function BalanceTab() {
       {/* 残高カード */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <div style={cardStyle({ background: crit ? R + "12" : G + "08", border: `1px solid ${crit ? R + "44" : G + "33"}` })}>
-          <div style={{ fontSize: 10, color: "#8a9bb5", marginBottom: 3 }}>現在残高</div>
+          <div style={{ fontSize: 10, color: MUTE, marginBottom: 3 }}>現在残高</div>
           <div style={{ fontSize: 22, fontWeight: 900, color: crit ? R : G }}>
             {bal.toFixed(4)}<span style={{ fontSize: 11 }}> SOL</span>
           </div>
           {crit && <div style={{ fontSize: 10, color: R, marginTop: 3, fontWeight: 700 }}>⚠ コピー停止推奨</div>}
         </div>
         <div style={cardStyle()}>
-          <div style={{ fontSize: 10, color: "#8a9bb5", marginBottom: 3 }}>今月出金</div>
+          <div style={{ fontSize: 10, color: MUTE, marginBottom: 3 }}>今月出金</div>
           <div style={{ fontSize: 22, fontWeight: 900, color: Y }}>¥{monthTotal.toLocaleString()}</div>
-          <div style={{ fontSize: 9, color: "#8a9bb5", marginTop: 2 }}>目標 ¥600,000</div>
+          <div style={{ fontSize: 9, color: MUTE, marginTop: 2 }}>目標 ¥600,000</div>
           <div style={{ height: 3, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 5 }}>
             <div style={{ height: "100%", width: `${Math.min(monthTotal / 600000 * 100, 100)}%`, background: Y, borderRadius: 2 }} />
           </div>
@@ -513,8 +265,8 @@ function BalanceTab() {
             background: "rgba(255,255,255,0.04)" }}>
             <div>
               <span style={{ fontWeight: 700, color: Y, fontSize: 12 }}>¥{parseFloat(w.amount).toLocaleString()}</span>
-              <span style={{ fontSize: 10, color: "#8a9bb5", marginLeft: 8 }}>{w.date}</span>
-              {w.note && <span style={{ fontSize: 10, color: "#8a9bb5", marginLeft: 6 }}>{w.note}</span>}
+              <span style={{ fontSize: 10, color: MUTE, marginLeft: 8 }}>{w.date}</span>
+              {w.note && <span style={{ fontSize: 10, color: MUTE, marginLeft: 6 }}>{w.note}</span>}
             </div>
             <button onClick={() => removeW(w.id)}
               style={{ background: "none", border: "none", color: R + "55", cursor: "pointer", fontSize: 13 }}>×</button>
@@ -537,9 +289,18 @@ function BalanceTab() {
 // ══════════════════════════════════════════════════════
 //  メインApp
 // ══════════════════════════════════════════════════════
+const TABS = [
+  { key: "home",       label: "🏠 ホーム" },
+  { key: "discovery",  label: "🔍 発見" },
+  { key: "validation", label: "📋 分析" },
+  { key: "compare",    label: "⚖ 比較" },
+  { key: "tracker",    label: "📊 損益" },
+  { key: "settings",   label: "⚙️ 設定" },
+  { key: "balance",    label: "💴 残高" },
+];
+
 export default function App() {
-  const [tab, setTab] = useState(0);
-  const tabs = ["🔍 評価", "📊 損益", "⚙️ 設定", "💴 残高"];
+  const [tab, setTab] = useState("home");
 
   return (
     <div style={{ minHeight: "100vh", background: "#0a0f1a",
@@ -550,32 +311,35 @@ export default function App() {
         background: "rgba(0,229,160,0.03)" }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 3 }}>
           <span style={{ fontSize: 18, fontWeight: 900, color: G }}>GMGN</span>
-          <span style={{ fontSize: 11, color: "#8a9bb5", fontWeight: 600 }}>コピートレード管理ダッシュボード</span>
+          <span style={{ fontSize: 11, color: MUTE, fontWeight: 600 }}>トレーダー知能エンジン</span>
         </div>
-        <div style={{ fontSize: 10, color: "#8a9bb5", marginBottom: 12 }}>
+        <div style={{ fontSize: 10, color: MUTE, marginBottom: 12 }}>
           コピー中: <span style={{ color: G, fontWeight: 700 }}>Game</span>
           <span style={{ marginLeft: 10 }}>保有33日 · 勝率56% · 未実現+$0</span>
         </div>
-        <div style={{ display: "flex", gap: 6, paddingBottom: 1 }}>
-          {tabs.map((t, i) => (
-            <button key={i} onClick={() => setTab(i)} style={{
-              padding: "7px 14px", borderRadius: 8, border: "none",
-              cursor: "pointer", fontSize: 12, fontWeight: 700,
-              background: tab === i ? G : "rgba(255,255,255,0.06)",
-              color: tab === i ? "#0a0f1a" : "#8a9bb5",
+        <div style={{ display: "flex", gap: 6, paddingBottom: 1, overflowX: "auto" }}>
+          {TABS.map((t) => (
+            <button key={t.key} onClick={() => setTab(t.key)} style={{
+              padding: "7px 12px", borderRadius: 8, border: "none",
+              cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
+              background: tab === t.key ? G : "rgba(255,255,255,0.06)",
+              color: tab === t.key ? "#0a0f1a" : MUTE,
               transition: "all 0.15s",
-              boxShadow: tab === i ? `0 2px 10px ${G}44` : "none",
-            }}>{t}</button>
+              boxShadow: tab === t.key ? `0 2px 10px ${G}44` : "none",
+            }}>{t.label}</button>
           ))}
         </div>
       </div>
 
       {/* コンテンツ */}
       <div style={{ padding: "14px 14px 0" }}>
-        {tab === 0 && <EvalTab />}
-        {tab === 1 && <TrackerTab />}
-        {tab === 2 && <SettingsTab />}
-        {tab === 3 && <BalanceTab />}
+        {tab === "home"       && <HomeTab goTo={setTab} />}
+        {tab === "discovery"  && <DiscoveryTab />}
+        {tab === "validation" && <ValidationTab />}
+        {tab === "compare"    && <ComparisonTab />}
+        {tab === "tracker"    && <TrackerTab />}
+        {tab === "settings"   && <SettingsTab />}
+        {tab === "balance"    && <BalanceTab />}
       </div>
     </div>
   );

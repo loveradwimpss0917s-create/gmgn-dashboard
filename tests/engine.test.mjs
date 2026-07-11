@@ -67,7 +67,41 @@ test("all-null stats → INSUFFICIENT_DATA (not score 0)", () => {
   assert.equal(v.score.totalScore, null);
 });
 
-// 受け入れ基準4: RPC全滅でも手動値のみで完走
+// 回帰: monthlyPnl（RPC単独では常にnull）が主要指標カウントに含まれることで
+// 過度に厳しく判定不能になっていたバグの再現ケース。winRate/dailyTradesのみ
+// 取得できた場合、holdingScore(35%)+riskScore(15%)+stabilityScore(25%)が失われ
+// 実際に available weight は 0.25 < 0.5 のため、正しく INSUFFICIENT_DATA になる
+// べきだが、dataCompleteness は 0 ではなく実測（0.25）を反映すべき
+test("partial RPC data (winRate+dailyTrades only) reports real completeness, not a hard 0", () => {
+  const v = evaluate(
+    { ...base, winRate: 56, dailyTrades: 0.8, tradeCount30d: 24 },
+    RULES,
+  );
+  assert.equal(v.decision, "INSUFFICIENT_DATA");
+  assert.ok(
+    v.score.dataCompleteness > 0,
+    `dataCompleteness should reflect the 2 available metrics, was ${v.score.dataCompleteness}`,
+  );
+});
+
+// 回帰: holdingScore が欠損でも他の3成分が揃っていれば(completeness>=0.5)
+// スコアリングが完走すること（monthlyPnlの構造的欠損だけで巻き添えにしない）
+test("3-of-4 RPC fields (missing only unrealizedPnlUsd) still produces a real score", () => {
+  const v = evaluate(
+    {
+      ...base,
+      avgHoldingHours: 20 * 24,
+      winRate: 56,
+      dailyTrades: 0.8,
+      tradeCount30d: 24,
+    },
+    RULES,
+  );
+  assert.notEqual(v.decision, "INSUFFICIENT_DATA");
+  assert.ok(v.score.totalScore > 0, `expected a real score, got ${v.score.totalScore}`);
+});
+
+// 受け入れ基準4: RPC全滅でも手動入力のみで完走する
 test("manual-only stats complete the pipeline", () => {
   const manual = {
     ...base,

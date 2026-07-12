@@ -39,6 +39,7 @@ export default function ValidationTab({ onSaved }) {
   const [status, setStatus] = useState(null);
   const [savedMsg, setSavedMsg] = useState(false);
   const [legacy, setLegacy] = useState(() => load("gmgn_evals", []));
+  const [expandedLegacyId, setExpandedLegacyId] = useState(null);
 
   function manualStats(addr) {
     const num = (x) => (x === "" || x == null ? null : parseFloat(x));
@@ -104,7 +105,7 @@ export default function ValidationTab({ onSaved }) {
   function saveResult() {
     if (!verdict || !stats) return;
     saveTrader({ ...stats, label: name || stats.label }, verdict);
-    // 旧評価履歴にも併記（後方互換）
+    // 旧評価履歴にも併記（後方互換）。fullStats/fullVerdictで詳細を再表示できるようにする
     const entry = {
       name: name || shortAddr(stats.address),
       score: verdict.score.totalScore ?? 0,
@@ -113,6 +114,8 @@ export default function ValidationTab({ onSaved }) {
         : verdict.decision === "CONDITIONAL" ? "△ 要観察" : "❌ 不採用",
       date: new Date().toLocaleDateString("ja-JP"),
       id: Date.now(),
+      fullStats: { ...stats, label: name || stats.label },
+      fullVerdict: verdict,
     };
     const next = [entry, ...legacy];
     setLegacy(next);
@@ -188,24 +191,45 @@ export default function ValidationTab({ onSaved }) {
       {/* 旧評価履歴 */}
       {legacy.length > 0 && (
         <div style={cardStyle()}>
-          <div style={{ fontWeight: 700, fontSize: 12, color: MUTE, marginBottom: 10 }}>📋 評価履歴</div>
-          {legacy.map((s) => (
-            <div key={s.id} style={{ display: "flex", justifyContent: "space-between",
-              alignItems: "center", padding: "7px 0",
-              borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-              <div>
-                <span style={{ fontWeight: 700, color: "#e8f0ff", fontSize: 12 }}>{s.name}</span>
-                <span style={{ fontSize: 10, color: MUTE, marginLeft: 8 }}>{s.date}</span>
+          <div style={{ fontWeight: 700, fontSize: 12, color: MUTE, marginBottom: 10 }}>
+            📋 評価履歴 <span style={{ fontWeight: 400, fontSize: 10 }}>（クリックで分析内容を再表示）</span>
+          </div>
+          {legacy.map((s) => {
+            const expanded = expandedLegacyId === s.id;
+            return (
+              <div key={s.id}>
+                <div
+                  onClick={() => setExpandedLegacyId(expanded ? null : s.id)}
+                  style={{ display: "flex", justifyContent: "space-between",
+                    alignItems: "center", padding: "7px 0", cursor: "pointer",
+                    borderBottom: expanded ? "none" : "1px solid rgba(255,255,255,0.05)" }}>
+                  <div>
+                    <span style={{ fontWeight: 700, color: "#e8f0ff", fontSize: 12 }}>{s.name}</span>
+                    <span style={{ fontSize: 10, color: MUTE, marginLeft: 8 }}>{s.date}</span>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 13, fontWeight: 800,
+                      color: s.score >= 70 ? G : s.score >= 45 ? Y : R }}>{s.score}点</span>
+                    <span style={{ fontSize: 12 }}>{s.verdict.slice(0, 1)}</span>
+                    <span style={{ fontSize: 10, color: MUTE }}>{expanded ? "▲" : "▼"}</span>
+                    <button onClick={(e) => { e.stopPropagation(); removeLegacy(s.id); }}
+                      style={{ background: "none", border: "none", color: R + "66", cursor: "pointer", fontSize: 14 }}>×</button>
+                  </div>
+                </div>
+                {expanded && (
+                  <div style={{ padding: "4px 0 12px" }}>
+                    {s.fullVerdict ? (
+                      <ScoreCard verdict={s.fullVerdict} compact />
+                    ) : (
+                      <div style={{ fontSize: 10, color: MUTE, padding: "8px 0" }}>
+                        詳細データなし（機能追加前に保存された古い記録です）
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <span style={{ fontSize: 13, fontWeight: 800,
-                  color: s.score >= 70 ? G : s.score >= 45 ? Y : R }}>{s.score}点</span>
-                <span style={{ fontSize: 12 }}>{s.verdict.slice(0, 1)}</span>
-                <button onClick={() => removeLegacy(s.id)}
-                  style={{ background: "none", border: "none", color: R + "66", cursor: "pointer", fontSize: 14 }}>×</button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
